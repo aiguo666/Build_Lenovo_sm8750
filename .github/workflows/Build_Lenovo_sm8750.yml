@@ -425,7 +425,7 @@ jobs:
               echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
               echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
             else
-              curl -LSs "https://raw.githubusercontent.com/aiguo666/old_SukiSU_4.1.2/master/kernel/setup.sh"
+              curl -LSs "https://raw.githubusercontent.com/aiguo666/old_SukiSU_4.1.2/master/kernel/setup.sh" | bash -s v3.1.0
               cd ./KernelSU
               GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
               echo "当前提交哈希: $GIT_COMMIT_HASH"
