@@ -428,7 +428,7 @@ jobs:
             cd ./KernelSU
             GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
             echo "当前提交哈希: $GIT_COMMIT_HASH"
-            export KSU_VERSION=$KSU_VERSION
+        
                     KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/aiguo666/old_SukiSU_4.1.2/refs/heads/master/kernel/Makefile" | 
                       grep -m1 "KSU_VERSION_API :=" | 
                       awk -F'= ' '{print $2}' | 
