@@ -437,7 +437,7 @@ jobs:
           echo "=== 最终版本 ==="
           echo "SukiSU版本: v${KSU_API_VERSION}-${CURRENT_COMMIT}-TG@qdykernel"
           echo "KSU版本号: $KSU_VERSION"
-         fi
+          fi
 
     
       - name: 🔧 Set up SUSFS (配置 SUSFS)
