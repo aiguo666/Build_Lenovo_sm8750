@@ -70,6 +70,13 @@ on:
         default: true
         type: boolean
 
+      # 新增：Unicode不可见字码点绕过读取漏洞修复选项
+      enable_unicode_bypass_fix:
+        description: "是否添加Unicode不可见字码点绕过读取漏洞修复"
+        required: false
+        default: false
+        type: boolean
+
       
        
 jobs:
@@ -88,6 +95,7 @@ jobs:
       ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
       ENABLE_SUSFS: ${{ github.event.inputs.enable_susfs }}
       ENABLE_SIGNED: ${{ github.event.inputs.enable_signed }}
+      ENABLE_UNICODE_BYPASS_FIX: ${{ github.event.inputs.enable_unicode_bypass_fix }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -412,6 +420,16 @@ jobs:
           wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
           echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' ./common/security/Kconfig
+
+       # 修改：增加条件判断，仅当启用该功能时才执行
+      - name: ⚙️ apply unicode_bypass_fix_6.1 Patch (应用Unicode零宽补丁)
+        if: ${{ env.ENABLE_UNICODE_BYPASS_FIX == 'true' }}
+        run: |
+          echo "正在添加unicode_bypass_fix_6.1补丁…"
+          cd kernel_workspace
+          cd ./common
+          wget https://raw.githubusercontent.com/lemonsn/kernel/refs/heads/main/unicode_bypass_fix_6.1.patch
+          patch -p1 --forward < unicode_bypass_fix_6.1.patch || true
 
       - name: ⚙️ Set ${{ env.KSU_TYPE }} (设置${{ env.KSU_TYPE }})
         run: |
