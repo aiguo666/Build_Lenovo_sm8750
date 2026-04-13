@@ -414,29 +414,58 @@ jobs:
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' ./common/security/Kconfig
 
       - name: ⚙️ Set ${{ env.KSU_TYPE }} (设置${{ env.KSU_TYPE }})
-        run: |
-          cd kernel_workspace
-          echo "正在配置${{ env.KSU_TYPE }}..."
-          # 使用tag v3.1.0拉取源码
-          echo "正在拉取SukiSU v3.1.0源码..."
-          curl -LSs "https://raw.githubusercontent.com/aiguo666/old_SukiSU_4.1.2/master/kernel/setup.sh" | bash -s v3.1.0
-          cd ./KernelSU
-      
-          # 获取当前状态信息
-          CURRENT_COMMIT=$(git rev-parse --short=8 HEAD)
-          echo "当前提交: $CURRENT_COMMIT"
-      
-          # 硬编码版本号
-          KSU_VERSION=40545
-          KSU_API_VERSION="4.1.0"
-      
-          echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
-      
-          echo "=== 最终版本 ==="
-          echo "SukiSU版本: v${KSU_API_VERSION}-${CURRENT_COMMIT}-TG@qdykernel"
-          echo "KSU版本号: $KSU_VERSION"
+       run: |
+         cd kernel_workspace
+         echo "正在配置${{ env.KSU_TYPE }}..."
+
+         # 下载并执行 setup.sh 来克隆 KernelSU
+         curl -LSs "https://raw.githubusercontent.com/aiguo666/old_SukiSU_4.1.2/master/kernel/setup.sh" | bash -s v3.1.0
+    
+         cd ./KernelSU
+    
+         # 检出特定的 v3.1.0 标签
+         git checkout v3.1.0
+    
+         # 获取当前提交哈希
+         GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
+         echo "当前提交哈希: $GIT_COMMIT_HASH"
+    
+         # 从 v3.1.0 标签对应的 Makefile 中获取 KSU_API_VERSION
+         KSU_API_VERSION=$(grep -m1 "KSU_VERSION_API :=" kernel/Makefile | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+    
+         # 如果获取失败，使用默认值
+         if [ -z "$KSU_API_VERSION" ]; then
+         KSU_API_VERSION="3.1.0"
+         fi
+    
+         echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
+         echo "当前 KernelSU 版本: $KSU_API_VERSION"
+    
+         # 设置版本定义（与管理器 40545 兼容）
+         VERSION_DEFINITIONS=$'define get_ksu_version_full\nv3.1.0-'"$GIT_COMMIT_HASH"$'-TG@qdykernel\nendef\n\nKSU_VERSION_API := '"$KSU_API_VERSION"$'\nKSU_VERSION_FULL := v3.1.0-'"$GIT_COMMIT_HASH"$'-TG@qdykernel'
+    
+         # 清理旧的版本定义
+         sed -i '/define get_ksu_version_full/,/endef/d' kernel/Makefile
+         sed -i '/KSU_VERSION_API :=/d' kernel/Makefile
+         sed -i '/KSU_VERSION_FULL :=/d' kernel/Makefile
+    
+         # 插入新的版本定义
+         awk -v def="$VERSION_DEFINITIONS" '
+         /REPO_OWNER :=/ {print; print def; inserted=1; next}
+         1
+         END {if (!inserted) print def}
+         ' kernel/Makefile > kernel/Makefile.tmp && mv kernel/Makefile.tmp kernel/Makefile
+    
+         # 计算 SukiSU 版本号
+         KSUVER=$(expr $(git rev-list --count v3.1.0) + 37185 2>/dev/null || echo 114514)
+         echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+         echo "ksuver=$KSUVER" >> $GITHUB_OUTPUT
+    
+         # 验证版本配置
+         echo "=== 版本配置验证 ==="
+         grep -A5 "REPO_OWNER" kernel/Makefile | head -10
+         grep "KSU_VERSION_FULL" kernel/Makefile
+         echo "SukiSU版本号: v3.1.0-${GIT_COMMIT_HASH}-TG@qdykernel (KSUVER: $KSUVER)"
      
 
     
