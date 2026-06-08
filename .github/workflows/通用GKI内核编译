@@ -1,0 +1,580 @@
+# universal_gki_kernel_build.yml
+name: Universal GKI Kernel Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      # 核心配置
+      kernel_version:
+        description: "内核版本 (格式: 5.10.246, 6.6.89 等)"
+        required: true
+        type: string
+        default: "6.6.89"
+      
+      android_version:
+        description: "Android版本 (数字)"
+        required: true
+        type: number
+        default: 15
+      
+      kernel_source_url:
+        description: "内核源码Git仓库URL"
+        required: true
+        type: string
+        default: "https://github.com/LineageOS/android_kernel_oneplus_sm8650"
+      
+      kernel_branch:
+        description: "内核分支"
+        required: true
+        type: string
+        default: "lineage-22"
+      
+      # 功能选择
+      ksu_type:
+        description: "KSU类型"
+        required: true
+        type: choice
+        options:
+          - 'SukiSU'
+          - 'ReSukiSU'
+          - 'None'
+        default: 'ReSukiSU'
+      
+      enable_kpm:
+        description: "启用KPM"
+        required: false
+        default: true
+        type: boolean
+      
+      enable_susfs:
+        description: "启用SUSFS"
+        required: false
+        default: true
+        type: boolean
+      
+      # 构建选项
+      defconfig_name:
+        description: "Defconfig名称 (相对于arch/arm64/configs/)"
+        required: false
+        type: string
+        default: "gki_defconfig"
+      
+      custom_kernel_suffix:
+        description: "自定义内核后缀 (留空使用默认)"
+        required: false
+        type: string
+        default: ''
+      
+      # 优化选项
+      enable_lz4_zstd:
+        description: "启用LZ4 1.10.0 & ZSTD 1.5.7优化"
+        required: false
+        default: true
+        type: boolean
+      
+      enable_adios_scheduler:
+        description: "启用ADIOS I/O调度器"
+        required: false
+        default: true
+        type: boolean
+      
+      enable_unicode_fix:
+        description: "启用Unicode绕过修复"
+        required: false
+        default: true
+        type: boolean
+      
+      # 工具链选项
+      toolchain_version:
+        description: "Clang/LLVM版本"
+        required: false
+        type: choice
+        options:
+          - 'clang-r510928'
+          - 'clang-r528052'
+          - 'clang-20'
+          - 'latest'
+        default: 'clang-r510928'
+
+jobs:
+  build:
+    name: Build_GKI_Kernel_${{ github.event.inputs.kernel_version }}
+    runs-on: ubuntu-latest
+    env:
+      KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+      ANDROID_VERSION: ${{ github.event.inputs.android_version }}
+      KERNEL_SOURCE_URL: ${{ github.event.inputs.kernel_source_url }}
+      KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch }}
+      DEFCONFIG: ${{ github.event.inputs.defconfig_name }}
+      KSU_TYPE: ${{ github.event.inputs.ksu_type }}
+      ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
+      ENABLE_SUSFS: ${{ github.event.inputs.enable_susfs }}
+      ENABLE_LZ4_ZSTD: ${{ github.event.inputs.enable_lz4_zstd }}
+      ENABLE_ADIOS: ${{ github.event.inputs.enable_adios_scheduler }}
+      ENABLE_UNICODE_FIX: ${{ github.event.inputs.enable_unicode_fix }}
+      CUSTOM_SUFFIX: ${{ github.event.inputs.custom_kernel_suffix }}
+      TOOLCHAIN: ${{ github.event.inputs.toolchain_version }}
+    
+    steps:
+      - name: 🏗️ Setup Build Environment
+        run: |
+          # 安装基础依赖
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            libncurses-dev \
+            libssl-dev \
+            libelf-dev \
+            bison \
+            flex \
+            git \
+            curl \
+            wget \
+            aria2 \
+            p7zip-full \
+            zstd \
+            python3 \
+            python3-pip \
+            bc \
+            rsync \
+            kmod \
+            cpio \
+            lz4 \
+            device-tree-compiler
+          
+          # 清理不需要的软件包释放空间
+          sudo apt autoremove -y
+          sudo apt clean
+          
+      - name: 🔧 Clone Kernel Source
+        run: |
+          echo "正在克隆内核源码..."
+          echo "仓库: $KERNEL_SOURCE_URL"
+          echo "分支: $KERNEL_BRANCH"
+          
+          git clone --depth=1 \
+            "$KERNEL_SOURCE_URL" \
+            -b "$KERNEL_BRANCH" \
+            kernel_source
+          
+          cd kernel_source
+          echo "源码克隆完成，版本信息:"
+          git log --oneline -1
+          
+      - name: 📦 Setup Toolchain
+        run: |
+          cd kernel_source
+          echo "设置工具链: $TOOLCHAIN"
+          
+          # 根据选择的工具链版本下载
+          case "$TOOLCHAIN" in
+            "clang-r510928")
+              TOOLCHAIN_URL="https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r510928/clang-r510928.zip"
+              BUILD_TOOLS_URL="https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r510928/build-tools.zip"
+              ;;
+            "clang-r528052")
+              TOOLCHAIN_URL="https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r528052/clang-r528052.zip"
+              BUILD_TOOLS_URL="https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r528052/build-tools.zip"
+              ;;
+            "clang-20"|"latest")
+              # 使用最新的Clang-20
+              TOOLCHAIN_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r528052.tar.gz"
+              BUILD_TOOLS_URL="https://android.googlesource.com/platform/prebuilts/build-tools/+archive/refs/heads/main.zip"
+              ;;
+          esac
+          
+          # 下载并解压工具链
+          mkdir -p toolchain
+          wget -q --show-progress -O toolchain/clang.tar.gz "$TOOLCHAIN_URL" || \
+          curl -L -o toolchain/clang.tar.gz "$TOOLCHAIN_URL"
+          
+          tar -xzf toolchain/clang.tar.gz -C toolchain/
+          rm toolchain/clang.tar.gz
+          
+          # 下载构建工具
+          wget -q --show-progress -O build-tools.zip "$BUILD_TOOLS_URL" || \
+          curl -L -o build-tools.zip "$BUILD_TOOLS_URL"
+          
+          unzip -q build-tools.zip -d build-tools/
+          rm build-tools.zip
+          
+          echo "工具链设置完成"
+          
+      - name: ⚙️ Parse Kernel Version
+        id: parse_version
+        run: |
+          cd kernel_source
+          
+          # 从Makefile中提取内核版本
+          if [ -f "Makefile" ]; then
+            KERNEL_MAJOR=$(grep -m1 '^VERSION =' Makefile | awk '{print $3}')
+            KERNEL_PATCHLEVEL=$(grep -m1 '^PATCHLEVEL =' Makefile | awk '{print $3}')
+            KERNEL_SUBLEVEL=$(grep -m1 '^SUBLEVEL =' Makefile | awk '{print $3}')
+            KERNEL_EXTRAVERSION=$(grep -m1 '^EXTRAVERSION =' Makefile | awk '{print $3}' || echo "")
+            
+            if [ -n "$KERNEL_MAJOR" ] && [ -n "$KERNEL_PATCHLEVEL" ]; then
+              KERNEL_BASE_VERSION="${KERNEL_MAJOR}.${KERNEL_PATCHLEVEL}"
+              FULL_VERSION="${KERNEL_BASE_VERSION}"
+              [ -n "$KERNEL_SUBLEVEL" ] && FULL_VERSION="${FULL_VERSION}.${KERNEL_SUBLEVEL}"
+              [ -n "$KERNEL_EXTRAVERSION" ] && FULL_VERSION="${FULL_VERSION}${KERNEL_EXTRAVERSION}"
+              
+              echo "内核版本检测结果:"
+              echo "主版本: $KERNEL_MAJOR"
+              echo "次版本: $KERNEL_PATCHLEVEL"
+              echo "修订版本: $KERNEL_SUBLEVEL"
+              echo "完整版本: $FULL_VERSION"
+              echo "基础版本: $KERNEL_BASE_VERSION"
+              
+              echo "KERNEL_BASE=$KERNEL_BASE_VERSION" >> $GITHUB_ENV
+              echo "KERNEL_FULL=$FULL_VERSION" >> $GITHUB_ENV
+              echo "KMI=android${{ env.ANDROID_VERSION }}-$KERNEL_BASE_VERSION" >> $GITHUB_ENV
+            fi
+          fi
+          
+          # 如果Makefile中没有版本信息，使用用户输入的版本
+          if [ -z "$KERNEL_BASE" ]; then
+            KERNEL_BASE=$(echo "${{ env.KERNEL_VERSION }}" | cut -d. -f1-2)
+            echo "KERNEL_BASE=$KERNEL_BASE" >> $GITHUB_ENV
+            echo "KERNEL_FULL=${{ env.KERNEL_VERSION }}" >> $GITHUB_ENV
+            echo "KMI=android${{ env.ANDROID_VERSION }}-$KERNEL_BASE" >> $GITHUB_ENV
+          fi
+          
+          echo "KMI: ${{ env.KMI }}"
+          echo "内核基础版本: ${{ env.KERNEL_BASE }}"
+          echo "内核完整版本: ${{ env.KERNEL_FULL }}"
+          
+      - name: 🛠️ Apply Performance Optimizations
+        if: ${{ env.ENABLE_LZ4_ZSTD == 'true' }}
+        run: |
+          cd kernel_source
+          echo "应用LZ4和ZSTD优化补丁..."
+          
+          # 下载补丁
+          wget -q https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/zram_patch/001-lz4.patch
+          wget -q https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/zram_patch/lz4armv8.S
+          wget -q https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/zram_patch/002-zstd.patch
+          
+          # 应用LZ4优化
+          if [ -f "001-lz4.patch" ]; then
+            patch -p1 -l < 001-lz4.patch || echo "LZ4补丁可能已部分应用或存在冲突"
+            cp lz4armv8.S lib/ || true
+            rm 001-lz4.patch
+          fi
+          
+          # 应用ZSTD优化
+          if [ -f "002-zstd.patch" ]; then
+            patch -p1 -l < 002-zstd.patch || echo "ZSTD补丁可能已部分应用或存在冲突"
+            rm 002-zstd.patch
+          fi
+          
+      - name: 🔧 Add ADIOS I/O Scheduler
+        if: ${{ env.ENABLE_ADIOS == 'true' }}
+        run: |
+          cd kernel_source
+          echo "添加ADIOS I/O调度器支持..."
+          
+          # 下载ADIOS补丁
+          ADIOS_PATCH_URL="https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/lib/adios_ioscheduler.patch"
+          curl -L -o adios_ioscheduler.patch "$ADIOS_PATCH_URL"
+          
+          if [ -f "adios_ioscheduler.patch" ]; then
+            patch -p1 -l < adios_ioscheduler.patch || echo "ADIOS补丁可能已存在冲突"
+            rm adios_ioscheduler.patch
+          fi
+          
+          # 启用ADIOS配置
+          if [ -f "arch/arm64/configs/${{ env.DEFCONFIG }}" ]; then
+            if ! grep -q "CONFIG_MQ_IOSCHED_ADIOS" "arch/arm64/configs/${{ env.DEFCONFIG }}"; then
+              echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "arch/arm64/configs/${{ env.DEFCONFIG }}"
+              echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "arch/arm64/configs/${{ env.DEFCONFIG }}"
+              echo "✓ 已启用ADIOS I/O调度器"
+            fi
+          fi
+          
+      - name: ⚙️ Apply Unicode Bypass Fix
+        if: ${{ env.ENABLE_UNICODE_FIX == 'true' }}
+        run: |
+          cd kernel_source
+          echo "应用Unicode绕过修复..."
+          
+          # 根据内核版本选择不同的补丁
+          KERNEL_MAJOR_MINOR=$(echo "${{ env.KERNEL_BASE }}" | cut -d. -f1-2)
+          
+          if [[ "$KERNEL_MAJOR_MINOR" == "6.1" ]] || [[ "$KERNEL_MAJOR_MINOR" == "6.6" ]]; then
+            PATCH_URL="https://raw.githubusercontent.com/lemonsn/kernel/main/unicode_bypass_fix_6.1.patch"
+            curl -L -o unicode_fix.patch "$PATCH_URL"
+            patch -p1 -l < unicode_fix.patch || echo "Unicode补丁可能已存在冲突"
+            rm unicode_fix.patch
+          else
+            echo "⚠️ 当前内核版本 ${{ env.KERNEL_BASE }} 可能需要不同的Unicode补丁"
+          fi
+          
+      - name: 🛡️ Setup KernelSU
+        if: ${{ env.KSU_TYPE != 'None' }}
+        run: |
+          cd kernel_source
+          echo "设置KernelSU: ${{ env.KSU_TYPE }}"
+          
+          if [ "${{ env.KSU_TYPE }}" == 'ReSukiSU' ]; then
+            # 使用ReSukiSU
+            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            cd KernelSU
+            KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 10000)
+            echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+            echo "KSU_TYPE=ReSukiSU" >> $GITHUB_ENV
+          elif [ "${{ env.KSU_TYPE }}" == 'SukiSU' ]; then
+            # 使用SukiSU
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s builtin
+            cd KernelSU
+            KSU_VERSION=$(expr $(git rev-list --count main) + 37185 2>/dev/null || echo 10000)
+            echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+            echo "KSU_TYPE=SukiSU" >> $GITHUB_ENV
+          fi
+          
+          echo "KSU版本: ${{ env.KSU_VERSION }}"
+          
+      - name: 🗂️ Setup SUSFS
+        if: ${{ env.ENABLE_SUSFS == 'true' }}
+        run: |
+          cd kernel_source
+          echo "设置SUSFS..."
+          
+          # 克隆SUSFS仓库
+          SUSFS_REPO="https://github.com/cctv18/susfs4ksu.git"
+          SUSFS_BRANCH="oki-android${{ env.ANDROID_VERSION }}-${{ env.KERNEL_BASE }}"
+          
+          echo "尝试SUSFS分支: $SUSFS_BRANCH"
+          git clone --depth=1 "$SUSFS_REPO" -b "$SUSFS_BRANCH" susfs4ksu || \
+          git clone --depth=1 "$SUSFS_REPO" -b "main" susfs4ksu || \
+          echo "⚠️ 无法克隆SUSFS，跳过"
+          
+          if [ -d "susfs4ksu" ]; then
+            # 查找对应的SUSFS补丁
+            SUSFS_PATCH_PATTERN="*android${{ env.ANDROID_VERSION }}-${{ env.KERNEL_BASE }}*.patch"
+            SUSFS_PATCH=$(find susfs4ksu/kernel_patches -name "$SUSFS_PATCH_PATTERN" 2>/dev/null | head -1)
+            
+            if [ -n "$SUSFS_PATCH" ]; then
+              echo "找到SUSFS补丁: $SUSFS_PATCH"
+              cp "$SUSFS_PATCH" ./susfs.patch
+              patch -p1 -l < susfs.patch || echo "SUSFS补丁可能已存在冲突"
+              rm susfs.patch
+            else
+              echo "⚠️ 未找到匹配的SUSFS补丁"
+            fi
+            
+            # 复制隐藏补丁
+            if [ -f "susfs4ksu/other_patch/69_hide_stuff.patch" ]; then
+              cp susfs4ksu/other_patch/69_hide_stuff.patch .
+              patch -p1 -l < 69_hide_stuff.patch || echo "隐藏补丁可能已存在冲突"
+              rm 69_hide_stuff.patch
+            fi
+          fi
+          
+      - name: ⚙️ Configure Kernel Defconfig
+        run: |
+          cd kernel_source
+          echo "配置内核defconfig: ${{ env.DEFCONFIG }}"
+          
+          # 检查defconfig是否存在
+          if [ ! -f "arch/arm64/configs/${{ env.DEFCONFIG }}" ]; then
+            echo "❌ Defconfig文件不存在: ${{ env.DEFCONFIG }}"
+            echo "可用的defconfig文件:"
+            ls -la arch/arm64/configs/*.defconfig 2>/dev/null || echo "无defconfig文件"
+            exit 1
+          fi
+          
+          # 创建临时配置
+          cp "arch/arm64/configs/${{ env.DEFCONFIG }}" "arch/arm64/configs/gki_custom_defconfig"
+          
+          # 基础配置
+          CONFIG_FILE="arch/arm64/configs/gki_custom_defconfig"
+          
+          # 启用KernelSU
+          if [ "${{ env.KSU_TYPE }}" != 'None' ]; then
+            echo "CONFIG_KSU=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KPM=y" >> "$CONFIG_FILE"
+            
+            if [ "${{ env.KSU_TYPE }}" == 'ReSukiSU' ]; then
+              echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%-Re-AiGuo"' >> "$CONFIG_FILE"
+            fi
+          fi
+          
+          # 启用SUSFS
+          if [ "${{ env.ENABLE_SUSFS }}" == 'true' ]; then
+            echo "CONFIG_KSU_SUSFS=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$CONFIG_FILE"
+          fi
+          
+          # 其他通用配置
+          echo "CONFIG_TMPFS_XATTR=y" >> "$CONFIG_FILE"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$CONFIG_FILE"
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$CONFIG_FILE"
+          
+          # 设置内核名称后缀
+          if [ -n "${{ env.CUSTOM_SUFFIX }}" ]; then
+            echo "使用自定义后缀: ${{ env.CUSTOM_SUFFIX }}"
+            ESCAPED_SUFFIX=$(printf '%s\n' "${{ env.CUSTOM_SUFFIX }}" | sed 's:[\/&]:\\&:g')
+            sed -i "s/-4k/$ESCAPED_SUFFIX/g" "$CONFIG_FILE"
+          fi
+          
+          # 移除dirty标记
+          for f in scripts/setlocalversion; do
+            [ -f "$f" ] && sed -i 's/ -dirty//g' "$f"
+          done
+          
+          echo "Defconfig配置完成"
+          
+      - name: 🏗️ Build Kernel
+        run: |
+          cd kernel_source
+          echo "开始构建内核..."
+          echo "内核版本: ${{ env.KERNEL_FULL }}"
+          echo "Android版本: ${{ env.ANDROID_VERSION }}"
+          echo "KMI: ${{ env.KMI }}"
+          
+          # 设置环境变量
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LLVM=1
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          # 设置工具链路径
+          export PATH="$(pwd)/toolchain/bin:$(pwd)/build-tools/bin:$PATH"
+          
+          # 显示编译器信息
+          echo "编译器信息:"
+          clang --version | head -n 1
+          ld.lld --version | head -n 1
+          
+          # 设置构建时间
+          export KBUILD_BUILD_TIMESTAMP="$(date -R)"
+          export KBUILD_BUILD_HOST="GitHub Actions"
+          export KBUILD_BUILD_USER="kernel-builder"
+          
+          # 清理之前的构建
+          rm -rf out
+          
+          # 配置内核
+          echo "运行make gki_custom_defconfig..."
+          make O=out gki_custom_defconfig
+          
+          # 验证配置
+          echo "验证KSU配置..."
+          grep "CONFIG_KSU=y" out/.config && echo "✓ KSU已启用" || echo "⚠️ KSU未启用"
+          
+          # 编译内核
+          echo "开始编译内核Image..."
+          time make -j$(nproc) O=out \
+            CC="clang" \
+            LD="ld.lld" \
+            AR="llvm-ar" \
+            NM="llvm-nm" \
+            OBJCOPY="llvm-objcopy" \
+            OBJDUMP="llvm-objdump" \
+            STRIP="llvm-strip" \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            Image \
+            dtbs \
+            2>&1 | tee build.log
+            
+          # 检查构建结果
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "✅ 内核编译成功!"
+            ls -lh out/arch/arm64/boot/Image
+            file out/arch/arm64/boot/Image
+          else
+            echo "❌ 内核编译失败"
+            tail -50 build.log
+            exit 1
+          fi
+          
+      - name: 🔧 Apply KPM Patch
+        if: ${{ env.ENABLE_KPM == 'true' && env.KSU_TYPE != 'None' }}
+        run: |
+          cd kernel_source
+          echo "应用KPM补丁..."
+          
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            cd out/arch/arm64/boot
+            curl -LO https://github.com/ShirkNeko/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux
+            chmod +x patch_linux
+            ./patch_linux || echo "KPM补丁应用可能失败，继续..."
+            [ -f "oImage" ] && mv oImage Image
+          fi
+          
+      - name: 📦 Package Kernel Image
+        run: |
+          cd kernel_source
+          echo "打包内核镜像..."
+          
+          # 创建输出目录
+          OUTPUT_DIR="kernel_output_${{ env.KERNEL_FULL }}_${{ env.KSU_TYPE }}"
+          mkdir -p "$OUTPUT_DIR"
+          
+          # 复制内核镜像
+          cp out/arch/arm64/boot/Image "$OUTPUT_DIR/kernel_${{ env.KERNEL_FULL }}.img"
+          
+          # 创建版本信息文件
+          cat > "$OUTPUT_DIR/build_info.txt" << EOF
+          内核构建信息
+          ============
+          构建时间: $(date)
+          内核版本: ${{ env.KERNEL_FULL }}
+          Android版本: ${{ env.ANDROID_VERSION }}
+          KMI标识: ${{ env.KMI }}
+          KernelSU: ${{ env.KSU_TYPE }} v${{ env.KSU_VERSION }}
+          SUSFS支持: ${{ env.ENABLE_SUSFS }}
+          KPM支持: ${{ env.ENABLE_KPM }}
+          工具链: ${{ env.TOOLCHAIN }}
+          源码仓库: ${{ env.KERNEL_SOURCE_URL }}
+          源码分支: ${{ env.KERNEL_BRANCH }}
+          EOF
+          
+          # 打包
+          tar -czf "$OUTPUT_DIR.tar.gz" "$OUTPUT_DIR"
+          
+          echo "打包完成: $OUTPUT_DIR.tar.gz"
+          ls -lh "$OUTPUT_DIR.tar.gz"
+          
+      - name: 📤 Upload Artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: kernel_${{ env.KERNEL_FULL }}_${{ env.KSU_TYPE }}
+          path: |
+            kernel_source/kernel_output_${{ env.KERNEL_FULL }}_${{ env.KSU_TYPE }}.tar.gz
+            kernel_source/out/arch/arm64/boot/Image
+          
+      - name: 📊 Build Summary
+        if: always()
+        run: |
+          echo "================================"
+          echo "       构建完成"
+          echo "================================"
+          echo "内核版本: ${{ env.KERNEL_FULL }}"
+          echo "Android版本: ${{ env.ANDROID_VERSION }}"
+          echo "KMI标识: ${{ env.KMI }}"
+          echo "KernelSU: ${{ env.KSU_TYPE }}"
+          echo "构建时间: $(date)"
+          echo "================================"
+          
+          # 显示内核信息
+          if [ -f "kernel_source/out/arch/arm64/boot/Image" ]; then
+            echo "内核镜像信息:"
+            file kernel_source/out/arch/arm64/boot/Image
+            echo "大小: $(ls -lh kernel_source/out/arch/arm64/boot/Image | awk '{print $5}')"
+          fi
